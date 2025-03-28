@@ -7,6 +7,8 @@ import (
 	"github.com/runreveal/kawa"
 )
 
+var _ kawa.Destination[[]byte] = (*Printer)(nil)
+
 type Printer struct {
 	writer io.Writer
 	delim  []byte
@@ -29,8 +31,8 @@ func NewPrinter(writer io.Writer, opts ...func(*Printer)) *Printer {
 	return ret
 }
 
-func (p *Printer) Send(ctx context.Context, ack func(), msg ...kawa.Message[[]byte]) error {
-	for _, m := range msg {
+func (p *Printer) Send(ctx context.Context, msgs []kawa.Message[[]byte]) error {
+	for _, m := range msgs {
 		toSend := append(m.Value, []byte(p.delim)...)
 
 		_, err := p.writer.Write(toSend)
@@ -38,6 +40,5 @@ func (p *Printer) Send(ctx context.Context, ack func(), msg ...kawa.Message[[]by
 			return err
 		}
 	}
-	kawa.Ack(ack)
 	return nil
 }

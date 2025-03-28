@@ -110,13 +110,17 @@ type Destination[T any] interface {
 	// inside a processor's handler function, then the programmer must decide
 	// themselves how to properly acknowledge the event, and recognize that
 	// destinations will probably be acknowledging the message as well.
-	Send(context.Context, func(), ...Message[T]) error
+	Send(ctx context.Context, messages []Message[T]) error
 }
 
-type DestinationFunc[T any] func(context.Context, func(), ...Message[T]) error
+var _ Destination[struct{}] = DestinationFunc[struct{}](nil)
 
-func (df DestinationFunc[T]) Send(ctx context.Context, ack func(), msgs ...Message[T]) error {
-	return df(ctx, ack, msgs...)
+// DestinationFunc is a function that implements [Destination].
+type DestinationFunc[T any] func(context.Context, []Message[T]) error
+
+// Send implements [Destination] by calling the function.
+func (df DestinationFunc[T]) Send(ctx context.Context, msgs []Message[T]) error {
+	return df(ctx, msgs)
 }
 
 // Handler defines a function which operates on a single event of type T1 and

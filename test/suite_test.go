@@ -66,7 +66,7 @@ func SuiteTest(t *testing.T, src kawa.Source[[]byte], dst kawa.Destination[[]byt
 			// fmt.Println("sent:")
 			// stdoutDumper.Write(toSend)
 			// fmt.Printf("\n")
-			err := dst.Send(ctx, nil, kawa.Message[[]byte]{Value: toSend})
+			err := dst.Send(ctx, []kawa.Message[[]byte]{{Value: toSend}})
 			if !errors.Is(err, context.Canceled) {
 				assert.NoError(t, err)
 			}
@@ -141,7 +141,7 @@ func BuildBench(b *testing.B, count int, src kawa.Source[[]byte], dst kawa.Desti
 	wait.Add(await.RunFunc(func(ctx context.Context) error {
 		for i := 0; i < count; i++ {
 			toSend := want[i%len(want)]
-			err := dst.Send(ctx, nil, kawa.Message[[]byte]{Value: toSend})
+			err := dst.Send(ctx, []kawa.Message[[]byte]{{Value: toSend}})
 			if !errors.Is(err, context.Canceled) {
 				assert.NoError(b, err)
 			}

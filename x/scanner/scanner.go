@@ -11,6 +11,8 @@ import (
 	"github.com/runreveal/kawa"
 )
 
+var _ kawa.Source[[]byte] = (*Scanner)(nil)
+
 type Scanner struct {
 	scanner *bufio.Scanner
 	msgC    chan kawa.MsgAck[[]byte]

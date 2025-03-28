@@ -13,29 +13,14 @@ import (
 	"github.com/segmentio/ksuid"
 )
 
+var _ kawa.Destination[struct{}] = (*Destination[struct{}])(nil)
+
 // ErrDontAck should be returned by ErrorHandlers when they wish to
 // signal to the batcher to skip acking a message as delivered, but
 // continue to process.  For example, if an error is retryable and
 // will be retried upstream at the source if an ack is not received
 // before some timeout.
 var ErrDontAck = errors.New("Destination encountered a retryable error")
-
-// Flusher is the core interface that the user of this package must implement
-// to get the batching functionality.
-// It takes a slice of messages and returns an error if the flush fails. It's
-// expected to be run synchronously and only return once the flush is complete.
-// The flusher MUST respond to the context being canceled and return an error
-// if the context is canceled.  If no other error occured, then return the
-// context error.
-type Flusher[T any] interface {
-	Flush(context.Context, []kawa.Message[T]) error
-}
-
-type FlushFunc[T any] func(context.Context, []kawa.Message[T]) error
-
-func (ff FlushFunc[T]) Flush(c context.Context, msgs []kawa.Message[T]) error {
-	return ff(c, msgs)
-}
 
 type ErrorHandler[T any] interface {
 	HandleError(context.Context, error, []kawa.Message[T]) error
@@ -56,7 +41,7 @@ func (ef ErrorFunc[T]) HandleError(c context.Context, err error, msgs []kawa.Mes
 // deadlock as the internal channel being written to by `Send` will not be
 // getting read.
 type Destination[T any] struct {
-	flusher         Flusher[T]
+	flusher         kawa.Destination[T]
 	flushq          chan struct{}
 	flushlen        int
 	flushfreq       time.Duration
@@ -68,8 +53,8 @@ type Destination[T any] struct {
 	errorHandler ErrorHandler[T]
 	flusherr     chan error
 
-	messages chan msgAck[T]
-	buf      []msgAck[T]
+	messages chan pendingMessage[T]
+	buf      []pendingMessage[T]
 
 	count   int
 	running bool
@@ -132,7 +117,7 @@ func Raise[T any]() ErrorHandler[T] {
 }
 
 // NewDestination instantiates a new batcher.
-func NewDestination[T any](f Flusher[T], e ErrorHandler[T], opts ...OptFunc) *Destination[T] {
+func NewDestination[T any](f kawa.Destination[T], e ErrorHandler[T], opts ...OptFunc) *Destination[T] {
 	cfg := Opts{
 		FlushLength:      100,
 		FlushFrequency:   1 * time.Second,
@@ -174,39 +159,57 @@ func NewDestination[T any](f Flusher[T], e ErrorHandler[T], opts ...OptFunc) *De
 		errorHandler: e,
 		flusherr:     make(chan error, cfg.FlushParallelism),
 
-		messages: make(chan msgAck[T]),
+		messages: make(chan pendingMessage[T]),
 	}
 
 	return d
 }
 
-type msgAck[T any] struct {
-	msg kawa.Message[T]
-	ack func()
+type pendingMessage[T any] struct {
+	msg       kawa.Message[T]
+	errorChan chan<- error
 }
 
-// Send satisfies the kawa.Destination interface and accepts messages to be
+// Send satisfies the [kawa.Destination] interface and accepts messages to be
 // buffered for flushing after the FlushLength limit is reached or the
 // FlushFrequency timer fires, whichever comes first.
-//
-// Messages will not be acknowledged until they have been flushed successfully.
-func (d *Destination[T]) Send(ctx context.Context, ack func(), msgs ...kawa.Message[T]) error {
+// Send will wait until all the messages have been sent (or failed to send),
+// or ctx.Done() is closed, whichever comes first,
+// and returns the first error encountered.
+func (d *Destination[T]) Send(ctx context.Context, msgs []kawa.Message[T]) error {
 	if len(msgs) < 1 {
 		return nil
 	}
 
-	callMe := ackFn(ack, len(msgs))
+	// Buffer so we don't block the batching goroutine
+	// in case we bail early.
+	ch := make(chan error, len(msgs))
 
+	var firstError error
 	for _, m := range msgs {
 		select {
-		case d.messages <- msgAck[T]{msg: m, ack: callMe}: // Here
+		case d.messages <- pendingMessage[T]{msg: m, errorChan: ch}: // Here
 		case <-ctx.Done():
 			// TODO: one more flush?
 			return ctx.Err()
 		}
 	}
 
-	return nil
+	for range msgs {
+		select {
+		case err := <-ch:
+			if firstError == nil {
+				firstError = err
+			}
+		case <-ctx.Done():
+			if firstError == nil {
+				firstError = ctx.Err()
+			}
+			return firstError
+		}
+	}
+
+	return firstError
 }
 
 // Run starts the batching destination.  It must be called before messages will
@@ -328,73 +331,54 @@ func (d *Destination[T]) flush(ctx context.Context) {
 	}
 
 	// Have to make a copy so these don't get overwritten
-	msgs, acks := make([]kawa.Message[T], len(d.buf)), make([]func(), len(d.buf))
+	msgs := make([]kawa.Message[T], len(d.buf))
+	channels := make([]chan<- error, len(d.buf))
 	for i, m := range d.buf {
 		msgs[i] = m.msg
-		acks[i] = m.ack
+		channels[i] = m.errorChan
 	}
-	go func(id string, msgs []kawa.Message[T], acks []func()) {
-		d.doflush(flctx, msgs, acks)
+	// Clear the buffer for the next batch
+	d.buf = d.buf[:0]
+
+	go func() {
+		defer cancel()
+
+		if err := d.doflush(flctx, msgs, channels); err != nil {
+			d.flusherr <- err
+		}
 		// clear flush slot
 		<-d.flushq
 		// clear cancel
 		d.syncMu.Lock()
-		cncl := d.flushcan[id]
 		delete(d.flushcan, id)
 		d.syncMu.Unlock()
-		cncl()
-	}(id, msgs, acks)
-	// Clear the buffer for the next batch
-	d.buf = d.buf[:0]
+	}()
 }
 
-func (d *Destination[T]) doflush(ctx context.Context, msgs []kawa.Message[T], acks []func()) {
+func (d *Destination[T]) doflush(ctx context.Context, msgs []kawa.Message[T], channels []chan<- error) error {
 	if d.flushTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, d.flushTimeout)
 		defer cancel()
 	}
 
-	err := d.flusher.Flush(ctx, msgs)
+	err := d.flusher.Send(ctx, msgs)
+	var flushError error
 	if err != nil {
 		slog.Debug("flush err", "error", err)
-		err := d.errorHandler.HandleError(ctx, err, msgs)
-		if err != nil {
-			// If error handler returns ErrDontAck, this means we want the
-			// batcher to continue running, but to skip acknowledging the delivery
-			// of the affected messages
-			if errors.Is(err, ErrDontAck) {
-				return
-			}
-
-			// Otherwise, if error handler returns an error, then we exit by exposing
-			// the error upstream
-			d.flusherr <- err
-			return
+		flushError = d.errorHandler.HandleError(ctx, err, msgs)
+		// If error handler returns ErrDontAck, this means we want the
+		// batcher to continue running, but to skip acknowledging the delivery
+		// of the affected messages
+		if errors.Is(flushError, ErrDontAck) {
+			flushError = nil
 		}
 	}
 
-	for _, ack := range acks {
-		if ack != nil {
-			ack()
-		}
+	// All channels are appropriately buffered, so they will not block.
+	for _, ch := range channels {
+		ch <- err
 	}
-}
 
-// only call ack on last message acknowledgement
-func ackFn(ack func(), num int) func() {
-	ackChu := make(chan struct{}, num-1)
-	for i := 0; i < num-1; i++ {
-		ackChu <- struct{}{}
-	}
-	// bless you
-	return func() {
-		select {
-		case <-ackChu:
-		default:
-			if ack != nil {
-				ack()
-			}
-		}
-	}
+	return flushError
 }

@@ -11,6 +11,11 @@ import (
 	"github.com/runreveal/kawa"
 )
 
+var (
+	_ kawa.Source[[]byte]      = (*Source)(nil)
+	_ kawa.Destination[[]byte] = (*Destination)(nil)
+)
+
 type OptFunc func(*Opts)
 
 type Opts struct {
@@ -164,7 +169,7 @@ func (dest *Destination) Run(ctx context.Context) error {
 	return err
 }
 
-func (dest *Destination) Send(ctx context.Context, ack func(), msgs ...kawa.Message[[]byte]) error {
+func (dest *Destination) Send(ctx context.Context, msgs []kawa.Message[[]byte]) error {
 	for _, msg := range msgs {
 		token := dest.client.Publish(dest.cfg.topic, dest.cfg.qos, dest.cfg.retained, string(msg.Value))
 		token.Wait()

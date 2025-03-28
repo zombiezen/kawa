@@ -7,6 +7,11 @@ import (
 	"github.com/runreveal/kawa"
 )
 
+var (
+	_ kawa.Source[struct{}]      = MemorySource[struct{}]{}
+	_ kawa.Destination[struct{}] = MemoryDestination[struct{}]{}
+)
+
 type MemorySource[T any] struct {
 	MsgC <-chan T
 }
@@ -36,7 +41,7 @@ func NewMemDestination[T any](out chan<- T) MemoryDestination[T] {
 	}
 }
 
-func (ms MemoryDestination[T]) Send(ctx context.Context, ack func(), msgs ...kawa.Message[T]) error {
+func (ms MemoryDestination[T]) Send(ctx context.Context, msgs []kawa.Message[T]) error {
 	for _, msg := range msgs {
 		select {
 		case <-ctx.Done():

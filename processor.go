@@ -112,8 +112,7 @@ func (p *Processor[T1, T2]) handle(ctx context.Context) error {
 		}
 
 		sctx, sendSpan := tracer.Start(ctx, "kawa.processor.dst.send")
-		err = p.dst.Send(sctx, ack, msgs...)
-		if err != nil {
+		if err := p.dst.Send(sctx, msgs); err != nil {
 			return fmt.Errorf("destination: %w", err)
 		}
 		sendSpan.End()

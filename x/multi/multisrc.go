@@ -7,6 +7,8 @@ import (
 	"github.com/runreveal/kawa"
 )
 
+var _ kawa.Source[struct{}] = MultiSource[struct{}]{}
+
 type msgAck[T any] struct {
 	msg kawa.Message[T]
 	ack func()

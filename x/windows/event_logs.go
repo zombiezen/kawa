@@ -12,6 +12,8 @@ import (
 	"github.com/runreveal/kawa"
 )
 
+var _ kawa.Source[EventLog] = (*EventLogSource)(nil)
+
 type Option func(*EventLogSource)
 
 func WithChannel(channel string) Option {

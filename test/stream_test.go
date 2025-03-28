@@ -97,7 +97,7 @@ func TestSmokeHappyPath(t *testing.T) {
 	go func() {
 		for i := 0; i < 10; i++ {
 			x := BinString(fmt.Sprintf("hi-%d", i))
-			err := dst.Send(context.TODO(), nil, kawa.Message[*BinString]{Value: &x})
+			err := dst.Send(context.TODO(), []kawa.Message[*BinString]{{Value: &x}})
 			if err != nil {
 				t.Log(err)
 			}
@@ -130,7 +130,7 @@ func TestWow(t *testing.T) {
 	go func() {
 		for i := 0; i < 10; i++ {
 			x := BinString(fmt.Sprintf("wow-%d", i))
-			err := dst.Send(context.TODO(), nil, kawa.Message[*BinString]{Value: &x})
+			err := dst.Send(context.TODO(), []kawa.Message[*BinString]{{Value: &x}})
 			if err != nil {
 				t.Log(err)
 			}

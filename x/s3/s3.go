@@ -17,6 +17,8 @@ import (
 	"github.com/segmentio/ksuid"
 )
 
+var _ kawa.Destination[[]byte] = (*S3)(nil)
+
 type Option func(*S3)
 
 func WithBucketName(bucketName string) Option {
@@ -83,7 +85,8 @@ func New(opts ...Option) *S3 {
 	if ret.batchSize == 0 {
 		ret.batchSize = 100
 	}
-	ret.batcher = batch.NewDestination[[]byte](ret,
+	ret.batcher = batch.NewDestination[[]byte](
+		kawa.DestinationFunc[[]byte](ret.flush),
 		batch.Raise[[]byte](),
 		batch.FlushLength(ret.batchSize),
 		batch.FlushFrequency(5*time.Second),
@@ -99,12 +102,12 @@ func (s *S3) Run(ctx context.Context) error {
 	return s.batcher.Run(ctx)
 }
 
-func (s *S3) Send(ctx context.Context, ack func(), msgs ...kawa.Message[[]byte]) error {
-	return s.batcher.Send(ctx, ack, msgs...)
+func (s *S3) Send(ctx context.Context, msgs []kawa.Message[[]byte]) error {
+	return s.batcher.Send(ctx, msgs)
 }
 
-// Flush sends the given messages of type kawa.Message[type.Event] to an s3 bucket
-func (s *S3) Flush(ctx context.Context, msgs []kawa.Message[[]byte]) error {
+// flush sends the given messages of type kawa.Message[type.Event] to an s3 bucket
+func (s *S3) flush(ctx context.Context, msgs []kawa.Message[[]byte]) error {
 
 	// We need a handle a variety of arguments specifically the way
 	// they are presented within the config file. If we don't some
